@@ -1,0 +1,933 @@
+////////////////////////////////////////////////////////
+//                  IDM1000諷秶萇繚扢數               //
+////////////////////////////////////////////////////////
+//Write by ljj 2007.12.10(陔)
+#include <STC11F32XE.h>
+#include <pio.h>
+#include <absacc.h>
+#include <intrins.h>
+#include <JMDM-32DIO.h>
+//-------------------------EEPROM紱釬------------------------------------------------
+#define READ_AP_and_Data_Memory_Command          0x01     /* 趼誹黍茼蚚最唗睿杅擂湔揣*/
+#define PROGRAM_AP_and_Data_Memory_Command       0x02     /* 趼誹晤最茼蚚最唗睿杅擂湔揣 */
+#define SECTOR_ERASE_AP_and_Data_Memory_Command  0x03     /* 圮笠壺茼蚚最唗睿杅擂湔揣 */
+#define DELAY_CONST     						 60000    /* 隅砱Flash 紱釬脹渾奀潔 */
+#define MAINFREQ 1843200
+#define     MCU_CLOCK_20MHz
+#define USED_BYTE_QTY_IN_ONE_SECTOR                128
+
+//#define       DEBUG_STC89C_LE52RC
+#define       DEBUG_STC89C_LE58RD
+#define ENABLE_ISP 0x81  			//炵苀馱釬奀笘<24MHz 奀ㄛ勤IAP_CONTR 敵湔扢离森硉
+
+#ifdef MCU_CLOCK_40MHz
+    #define WAIT_TIME     0x00
+#endif
+#ifdef MCU_CLOCK_20MHz
+    #define WAIT_TIME     0x01
+#endif
+#ifdef MCU_CLOCK_10MHz
+    #define WAIT_TIME     0x02
+#endif
+#ifdef MCU_CLOCK_5MHz
+    #define WAIT_TIME     0x03
+#endif
+
+#ifdef DEBUG_STC89C_LE58RD	                 //STC89C58RD+, 89LE58RD+
+    #define DEBUG_AP_Memory_Begin_Sector_addr     0x0000
+    #define DEBUG_AP_Memory_End_Sector_addr       0x7e00
+    #define DEBUG_AP_Memory_End_Byte_addr         0x7fff
+
+    #define DEBUG_Data_Memory_Begin_Sector_addr   0x8000
+    #define DEBUG_Data_Memory_End_Sector_addr     0xf600
+    #define DEBUG_Data_Memory_End_Byte_addr       0xf7ff
+#endif
+
+#ifdef DEBUG_STC89C_LE54RD                 //STC89C54RD+,     89LE54RD+
+    #define DEBUG_AP_Memory_Begin_Sector_addr     0x0000
+    #define DEBUG_AP_Memory_End_Sector_addr       0x3e00
+    #define DEBUG_AP_Memory_End_Byte_addr         0x3fff
+    #define DEBUG_Data_Memory_Begin_Sector_addr   0x4000
+    #define DEBUG_Data_Memory_End_Sector_addr     0xbe00
+    #define DEBUG_Data_Memory_End_Byte_addr       0xbfff
+#endif
+
+#ifdef DEBUG_STC89C_LE53RC                 //STC89C53RC,     89LE53RC
+    #define DEBUG_AP_Memory_Begin_Sector_addr     0x0000
+    #define DEBUG_AP_Memory_End_Sector_addr       0x3600
+    #define DEBUG_AP_Memory_End_Byte_addr         0x37ff
+#endif
+
+#ifdef DEBUG_STC89C_LE52RC                 //STC89C52RC,     89LE52RC
+    #define DEBUG_AP_Memory_Begin_Sector_addr     0x0000
+    #define DEBUG_AP_Memory_End_Sector_addr       0x1e00
+    #define DEBUG_AP_Memory_End_Byte_addr         0x1fff
+    #define DEBUG_Data_Memory_Begin_Sector_addr   0x2000
+    #define DEBUG_Data_Memory_End_Sector_addr     0x2e00
+    #define DEBUG_Data_Memory_End_Byte_addr       0x2fff	   
+#endif
+
+#ifdef DEBUG_STC89C_LE51RC                 //STC89C51RC,     89LE51RC
+    #define DEBUG_AP_Memory_Begin_Sector_addr     0x0000
+    #define DEBUG_AP_Memory_End_Sector_addr       0x0e00
+    #define DEBUG_AP_Memory_End_Byte_addr         0x0fff
+    #define DEBUG_Data_Memory_Begin_Sector_addr   0x1000
+    #define DEBUG_Data_Memory_End_Sector_addr     0x1e00
+    #define DEBUG_Data_Memory_End_Byte_addr       0x1fff
+#endif
+/************擁曹講***********************************************/
+//unsigned char xdata protect_buffer[USED_BYTE_QTY_IN_ONE_SECTOR];
+void delay_ms(unsigned int a);
+void ISP_IAP_enable(void);
+void IAP_Disable();
+void send_char_com(unsigned char ch);
+unsigned char byte_read(unsigned int byte_addr);
+unsigned char sector_erase(unsigned int sector_addr);
+unsigned char byte_program(unsigned int byte_addr, unsigned char original_data);
+//unsigned char byte_program_and_verify(unsigned int byte_addr, unsigned char original_data);
+///unsigned char sequential_write_flash_in_one_sector(unsigned int begin_addr, unsigned int counter, unsigned char array[]);
+////unsigned char write_flash_with_protect_in_one_sector(unsigned int begin_addr, unsigned int counter, unsigned char array[]);
+///////////////////////////擁曹講隅砱/////////////////////////////////////////////
+#define             INBUF_LEN 15 								//杅擂酗僅
+unsigned char       inbuf1[INBUF_LEN];
+unsigned char       count3;
+bit                 read_flag=0;  
+unsigned int		delay_time; 
+unsigned int        led_delay; 
+bit			        dogflag;
+unsigned char       ch;
+unsigned char       Addr_Set;
+unsigned char       Cha_Run;    
+bit					F_Test=0,F_Buzzerena=1,F_Buzzer=0,F_Up=0,F_Conti=0,F_UpEn=0,F_Start=1;
+bit					Testmode=0;      // change to 1 for test mode
+  
+
+enum STATUS{
+Standby = 0,
+Initial1=2,
+Initial2=3,
+Initial3=4,
+Start=5,
+Checkelevator=6,
+Cylinderup=7,
+Checktray=8,
+Pushforward=9,
+Trayinposition=10,
+Fixtray=11,
+Outputready=12,
+Cylinderdown=13,
+Waitchange=14,
+Releasetray=15,
+Pullbackward=16,
+Pullbackward2=17,
+Changecomplete=18,
+error=99
+}Status,Prestatus;
+
+enum ELEVATORSTATUS{
+Elevatorup=1,
+Elevatordown=2,
+Enotray=3,
+Estandby=10,
+Eerror=99
+}Estatus,Preestatus,Ecommand;
+
+
+/////////////////////////16跺怀萸袨怓桶尨///////////////////////////////////////
+///////////////////////////統杅扢离票擁////////////////////////////////////////////
+///////////////////////////Function declare/////////////////////////////////////////////////
+void delay_ms(unsigned int a);
+bit Waitms(int delay);
+char Waitinput(bit input, bit value, int delay );
+char Waitinput2(bit input, bit value, int delay );
+void Transmit(unsigned char *r);
+void send_string_com( unsigned char *str, unsigned int strlen);
+void init_serialcomm( void );
+void out_bit(unsigned int num,bit value);
+union union_temp16
+{
+    unsigned int   un_temp16;
+    unsigned char  un_temp8[2];
+} my_unTemp16;
+
+bit in=0;			//define 0 as triggered
+bit out=1;			//define 1 as triggered
+
+
+///////////////////////////翋滲杅///////////////////////////////////////////////////  
+timer0() interrupt 1 						//5ms
+{
+	TR0=0;
+	ET0=0;
+	TH0=0xdc;
+	TL0=0x00; 
+	if(delay_time!=0)   delay_time--;
+	if(led_delay!=0)    led_delay--;  
+	TR0=1;
+	ET0=1;
+}
+
+void serial () interrupt 4 using 3 
+{
+	if (RI)
+	{
+		RI = 0;
+		ch=SBUF;
+		inbuf1[count3]=ch;
+		count3++;
+
+		if(SBUF == 0x0D)
+		{
+			//inbuf1[count3-1] = '\0';
+			count3 = 0;
+		}
+		/*
+		if(ch==79)
+		{
+			count3=0;
+			inbuf1[count3]=ch;
+		}
+		else
+		{
+			count3++;
+	 		inbuf1[count3]=ch;
+			if(ch==0x45)
+			{
+				read_flag=1; 			//彆揹諳諉彶腔杅擂湛善INBUF_LEN跺ㄛ苺桄羶渣ㄛ //憩离弇杅梓祩
+			}
+			if(count3>13) count3=0;
+		}
+		*/
+	}
+}
+
+void main(void)
+{
+
+	unsigned char       num_kk;
+	unsigned char       Code_kk;
+	unsigned char       Outval[16];
+	unsigned char       Inval[16];
+	unsigned char       led_step=1;
+	bit trigger=0;
+	bit F_open=0;		//door open flag
+//////////////////////////////////////等儂最唗啎扢///////////////////////////////
+	P0=0xff;
+	P2=0xff;
+	P1=0xff;
+	P3=0xff;
+	P4=0xff;
+	OE2=1;
+	P4SW=P4SW|0X70;				   //羲4褐
+	OE1=1;					   
+	OE2=1;
+	delay_ms(200);
+	TMOD=0x21;
+	TH0=0xdc;
+	TL0=0x00;
+	TR0=1;
+	ET0=1;
+	TR1=0;
+	ET1=0;
+/////////////////////////////////////////統杅离錨//////////////////////////////////
+	delay_time=0;
+	Addr_Set=0;
+	num_kk=0;
+	Code_kk=0;
+	count3=0;
+//	WDT_CONTR=0x3c;
+/////////////////////////////////////////珆尨場宎趙////////////////////////////////////
+	delay_ms(40);
+	init_serialcomm();  
+	Status=Standby;
+	Estatus=Estandby;
+	Ecommand=Estandby;
+	//WDT_CONTR=0x3c;   
+	EA=1;
+	DIR485=0;   
+
+	delay_ms(20);
+	for(num_kk=0;num_kk<16;num_kk++)
+	{
+		Outval[num_kk]='0';
+		Inval[num_kk]='0';
+	}					   //妏夔74hc245
+	for(num_kk=0;num_kk<16;num_kk++)
+	{
+		out_bit(num_kk+1,0);
+	}
+	delay_ms(100);
+	OE1=0;
+	OE2=0;  
+	Transmit("Vicommtech\r\n");
+	//while(1);
+	for(;;)												//羲宎
+	{
+		//WDT_CONTR=0x3c; 
+		switch(led_step)
+		{
+			case 1:
+				if(led_delay==0)
+				{
+					LED1=0;
+					OUT5=~out;
+					led_delay=200;
+					led_step++;
+				}
+				break;
+			case 2:
+				if(led_delay==0)
+				{
+					LED1=1;
+					if(F_Buzzer==1)	OUT5=out;
+					led_delay=200;
+					led_step=1;
+				}
+				break;
+			case 3:
+				break;
+			default:
+				break;
+		}
+		switch (Status)
+		{
+			case Standby:
+				if(IN1==in || trigger==1)
+				{
+					trigger=1;			//triggered
+					if(IN6==~in)
+					{
+						Ecommand=Elevatordown;		//trigger elevatordown
+					}
+					OUT1=out;			//進料機A Ready檢知
+					OUT12=~out;
+					OUT13=out;			//升降台氣缸推出至下極限電磁閥
+					switch (Waitinput(IN14, in, 3000))			//升降台氣缸推至下限檢知(原位)
+					{
+						case 1:													OUT9=out;		
+							Transmit("Standby ok\r\n");
+							trigger=0;
+							Status=Initial1;
+							OUT9=out;				//馬達運轉啟動(反轉至升降台)
+							delay_ms(700);			//justify if not good
+							break;
+						case 0:
+							OUT13=~out;
+							trigger=0;
+							Transmit("error elevator cylinder lower limit\r\n");
+							break;
+						default:;
+					}
+				}
+				break;
+			case Initial1:
+				OUT9=out;				//馬達運轉啟動(反轉至升降台)
+				switch (Waitinput(IN11==in || IN12==in || IN13==in, 0, 3000))		//料盤沒有在減速位或是滑台或放置位
+				{
+					case 1:
+						OUT9=~out;
+						Transmit("Initial1 ok\r\n");
+						Status=Initial2;
+						break;
+					case 0:
+						OUT9=~out;
+						Prestatus=Status;
+						Status=error;
+						Transmit("error tray not in position\r\n");
+						break;
+					default:
+						//delay_ms(100);			//if sensor on then let motor rotate 500ms
+						//Transmit("Delay 100\r\n");
+						break;
+		
+				}
+				break;	
+			case Initial2:
+				OUT16=out;			//料盤氣缸推入至升降台電磁閥
+				if(Waitms(1300)==0) break;
+				OUT16=~out;
+				Transmit("Initial2 ok\r\n");
+				Status=Initial3;		//another loop
+				break;
+			case Initial3:
+				OUT12=out;			//升降台氣缸推出至上極限電磁閥
+				OUT13=~out;
+				switch (Waitinput(IN15, in, 2000))		//升降台氣缸推至上限檢知
+				{
+					case 1:
+						if(Waitms(1000)==0) break; 
+						OUT12=~out;						//升降台氣缸推出至下極限電磁閥
+						OUT13=out;
+						Ecommand=Elevatordown;		//trigger elevatordown
+						Transmit("Initial3 ok\r\n");
+						Status=Start;
+						break;
+					case 0:
+						OUT12=~out;
+						Prestatus=Status;
+						Status=error;
+						Transmit("error elevator cylinder upper limit\r\n");
+						break;
+					default:;
+		
+				}
+				break;	
+			case Start:
+				if(IN1==in || IN3==in || Testmode==1 || F_Start ==1)
+				{
+					//delay_ms(1000);					//test
+					F_Start=0; 
+					Status=Checkelevator;
+					OUT4=out;			//turn on green light
+					OUT5=~out;			//turn off red light
+					Ecommand=Elevatorup;
+					Transmit("Start ok\r\n");
+				}
+				break;
+			case Checkelevator:
+				switch (Waitinput(IN8, in, 7000))		//料盤有料檢知
+				{
+					case 1:
+						Transmit("Checkelevator ok\r\n");
+						OUT2=~out;			//進料機出清中訊號
+						Status=Cylinderup;
+						F_UpEn=0;
+						//delay_ms(500);				//test
+						break;
+					case 0:
+						OUT2=out;			//進料機出清中訊號
+						OUT12=out;			//升降台氣缸推出至上極限電磁閥
+						OUT13=~out;
+						Ecommand=Elevatordown;
+						delay_ms(1300);					//wait 
+						Prestatus=Start;
+						Status=error;
+						Ecommand=Elevatordown;
+						OUT12=~out;			//升降台氣缸推出至下極限電磁閥
+						OUT13=out;
+						F_UpEn=1;
+						Transmit("error Empty tray\r\n");
+						break;
+					default:break;	
+				}
+				break;	
+			case Cylinderup:
+				OUT12=out;			//升降台氣缸推出至上極限電磁閥
+				OUT13=~out;
+				switch (Waitinput(IN15, in, 2000))		//升降台氣缸推至上限檢知
+				{
+					case 1:
+						delay_ms(1000);					//wait 
+						Transmit("Cylinderup ok\r\n");
+						Status=Cylinderdown;
+						break;
+					case 0:
+						OUT12=~out;
+						Prestatus=Status;
+						Status=error;
+						Transmit("error elevator cylinder upper limit\r\n");
+						break;
+					default:;
+		
+				}
+				break;	
+			case Cylinderdown:
+				OUT12=~out;			//升降台氣缸推出至下極限電磁閥
+				OUT13=out;
+				switch (Waitinput(IN14, in, 2000))		//升降台氣缸推至下限檢知
+				{
+					case 1:
+						Transmit("Cylinderdown ok\r\n");
+						Status=Checktray;
+						break;
+					case 0:
+						OUT13=~out;
+						Prestatus=Status;
+						Status=error;
+						Transmit("error elevator cylinder down limit\r\n");
+						break;
+					default:;
+		
+				}
+				break;	
+			case Checktray:
+				switch (Waitinput(IN9, in, 2000))		//料盤上升到準備出料原點檢知
+				{
+					case 1:
+						Transmit("Check tray ok\r\n");
+						Status=Pushforward;
+						break;
+					case 0:
+						Prestatus=Status;
+						Status=error;
+						Transmit("error Tray starting point error\r\n");
+						break;
+					default:;
+				}
+				break;
+			case Pushforward:
+				OUT14=out;				//料盤推出至輸送軌道氣缸電磁閥
+				OUT10=out;				//馬達快速運轉至置放位
+				switch (Waitinput(IN12, in, 5000))		//料盤迴轉至升降台馬達減速檢知
+				{
+					case 1:
+						OUT10=~out;
+						OUT14=~out;						//料盤推出至輸送軌道氣缸電磁閥
+						Transmit("Pushforward ok\r\n");
+						Status=Trayinposition;
+						break;
+					case 0:
+						OUT10=~out;
+						OUT14=~out;						//料盤推出至輸送軌道氣缸電磁閥
+						Prestatus=Status;
+						Status=error;
+						Transmit("error Slow down sensor wasn't triggered\r\n");
+						break;
+					default:;
+				}
+				break;	
+			case Trayinposition:
+				OUT11=out;			//馬達慢速運轉至置放位
+				switch (Waitinput(IN13, in, 5000))		//料盤轉至置放位馬達停止檢知
+				{
+					case 1:
+						OUT11=~out;			//馬達慢速運轉至置放位
+						Transmit("Trayinposition ok\r\n");
+						Status=Fixtray;
+						break;
+					case 0:
+						OUT11=~out;			//馬達慢速運轉至置放位
+						Prestatus=Status;
+						Status=error;
+						Transmit("error Tray was not in position\r\n");
+						break;
+					default:break;
+				}
+				break;	
+			case	Fixtray:
+				OUT15=out;			//料盤置放位氣缸推出固定電磁閥
+				delay_ms(500);
+				Status=Outputready;
+				break;
+				//now cylinder didn't have sensor
+				/*
+				switch (Waitinput(IN16, in, 2000))		//料盤置放位氣缸推出固定檢知
+				{
+					case 1:
+						Transmit("Fixtray ok\r\n");
+						Status=Outputready;
+						break;
+					case 0:
+						OUT15=~out;			//料盤置放位氣缸推出固定電磁閥
+						Prestatus=Status;
+						Status=error;
+						Transmit("error fix tray error\r\n");
+						break;
+					default:break;
+				}
+				*/
+			case Outputready:
+				OUT3=out;			//進料機A通知滑台可吸料檢知
+				/*
+				if(IN7==in)
+				{
+					Ecommand=Elevatordown;			//check empty tray
+				}
+				*/
+				switch (Waitinput(IN10, ~in, 500))		//料盤上升到滿盤檢知
+				{
+					case 1:
+						Transmit("Up limit ok\r\n");
+						Status=Waitchange;
+						break;
+					case 0:
+						Prestatus=Status;
+						Status=error;
+						Transmit("error tray up limit\r\n");
+						break;
+					default:;
+				}
+				break;	
+			
+
+			case Waitchange:
+				if(IN4==in || Testmode==1)
+				{
+					delay_ms(1000);				//test
+					OUT3=~out;					//進料機A通知滑台可吸料檢知
+					Status=Releasetray;
+				}
+				break;
+			case	Releasetray:
+				OUT15=~out;			//料盤置放位氣缸推出固定電磁閥
+				Transmit("Releasetray ok\r\n");
+				delay_ms(300);					//wait release
+				Status=Pullbackward;
+				break;
+/*
+				switch (Waitinput(IN16, ~in, 2000))		//料盤置放位氣缸推出固定檢知
+				{
+					case 1:
+						Transmit("Releasetray ok\r\n");
+						delay_ms(100);					//wait release
+						Status=Pullbackward;
+						break;
+					case 0:
+						OUT15=out;			//料盤置放位氣缸推出固定電磁閥
+						Prestatus=Status;
+						Status=error;
+						Transmit("error fix tray error\r\n");
+						break;
+					default:break;
+				}
+*/
+				break;
+			case Pullbackward:
+				OUT9=out;			//馬達運轉啟動(反轉至升降台)
+				switch (Waitinput(IN11, in, 5000))		//中段Sensor
+				{
+					case 1:
+						Transmit("Pullbackward ok\r\n");
+						Status=Pullbackward2;
+						break;
+					case 0:
+						OUT9=~out;			//馬達慢速運轉至置放位
+						Prestatus=Status;
+						Status=error;
+						Transmit("error Tray was not in position\r\n");
+						break;
+					default:break;
+				}
+				break;	
+			case Pullbackward2:
+				OUT9=out;			//馬達運轉啟動(反轉至升降台)
+				switch (Waitinput(IN11, ~in, 5000))		//中段Sensor
+				{
+					case 1:
+						OUT9=~out;
+						Transmit("Pullbackward2 ok\r\n");
+						Status=Changecomplete;
+						break;
+					case 0:
+						OUT9=~out;			//馬達慢速運轉至置放位
+						Prestatus=Status;
+						Status=error;
+						Transmit("error Tray was not in position\r\n");
+						break;
+					default:break;
+				}
+				break;	
+			case Changecomplete:
+				OUT16=out;			//料盤氣缸推入至升降台電磁閥
+				switch (Waitinput(IN9, in, 5000))		//料盤上升到準備出料原點檢知
+				{
+					case 1:
+						delay_ms(1000);					//wait release
+						OUT16=~out;
+						Transmit("Changecomplete ok\r\n");
+						Status=Start;		//another loop
+						break;
+					case 0:
+						OUT16=~out;			//馬達慢速運轉至置放位
+						Prestatus=Status;
+						Status=error;
+						Transmit("error Changecomplete error\r\n");
+						break;
+					default:break;
+				}
+				break;	
+			case error:
+				OUT4=~out;			//turn off green light
+				if(F_Buzzerena==1)
+					F_Buzzer=1;			//turn on red light
+				else
+					F_Buzzer=0;			//turn on red light
+				//OUT6=out;			//buzzer
+				if(IN2==in)
+				{
+					F_Buzzerena=0;
+				}
+				if(IN1==in)
+				{
+					F_Buzzerena=1;
+					OUT4=out;			//turn on green light
+					F_Buzzer=0;			//turn off buzzer
+					OUT6=~out;			//turn off test mode
+					Status=Prestatus;			//press reset then redo prestatus
+				}
+				break;
+			default:;
+		}
+		switch (Estatus)
+		{
+			case Elevatordown:
+				OUT7=out;				//升降台馬達啟動(下降)
+				switch (Waitinput2(IN6, in, 8000))		//升降台下極限
+				{
+					case 1:
+						OUT7=~out;
+						OUT8=~out;
+						Transmit("Elevatordown ok\r\n");
+						Estatus=Enotray;					//finish
+						break;
+					case 0:
+						OUT7=~out;
+						OUT8=~out;
+						Preestatus=Estatus;
+						Estatus=Eerror;
+						Transmit("error elevator lower limit\r\n");
+						break;
+					default:
+						if(IN5==~in)
+						{
+							OUT7=~out;
+							OUT8=~out;
+							Preestatus=Estatus;
+							Estatus=error;
+							Transmit("error Door open\r\n");
+						}
+						break;
+				}
+				break;
+			case Elevatorup:
+				OUT8=out;				//升降台馬達(上升)
+				switch (Waitinput2(IN7==in || IN8==in , 1, 8000))		//料盤有料檢知 料盤上升到準備出料原點檢知
+				{
+					case 1:
+						OUT7=~out;
+						OUT8=~out;
+						Transmit("Elevatorup ok\r\n");
+						Estatus=Estandby;					//finish
+						break;
+					case 0:
+						OUT7=~out;
+						OUT8=~out;
+						Preestatus=Estatus;
+						Estatus=Eerror;
+						Transmit("error Elevator upper limit not triggered\r\n");
+						break;
+					default:
+						if(IN5==~in)
+						{
+							OUT7=~out;
+							OUT8=~out;
+							Preestatus=Estatus;
+							Estatus=error;
+							Transmit("error Door open\r\n");
+						}
+						break;
+		
+				}
+				break;	
+			case Enotray:
+				if((IN1==in || F_open==1 || F_Up==1) && IN5==in && OUT3==~out && F_UpEn==1)
+				{
+					F_open=0;			//triggered
+					Estatus=Estandby;
+					Transmit("Enotray ok\r\n");
+				}
+				else if(IN5==~in)
+				{
+					F_open=1;
+				}
+				break;
+			case Estandby:
+				Estatus=Ecommand;		//command buffer to act
+				Ecommand=Estandby;
+
+				break;					
+			case Eerror:
+				OUT4=~out;			//turn off green light
+				if(F_Buzzerena==1)
+					F_Buzzer=1;			//turn on red light
+				else
+					F_Buzzer=0;			//turn on red light
+				if(IN2==in)
+				{
+					F_Buzzerena=0;
+				}
+				if(IN1==in)
+				{
+					F_Buzzerena=1;
+					OUT4=out;			//turn on green light
+					F_Buzzer=0;			//turn off buzzer
+					OUT6=~out;			//turn off test mode
+					Estatus=Preestatus;			//press reset then redo prestatus
+				}
+				break;
+			
+			default:
+				Transmit("E default ok\r\n");;
+		}
+		if(F_Test==0)
+		{
+			if(inbuf1[0]=='t' && inbuf1[1]==0x0D)
+			{
+				OUT6=out;		//manual mode
+				F_Test=1;
+				inbuf1[0]=0;
+				inbuf1[1]=0;
+				Transmit("Test mode\r\n");
+			}
+		}
+		else
+		{
+			if(inbuf1[0]=='d' && inbuf1[1]==0x0D)
+			{
+				Ecommand=Elevatordown;
+				inbuf1[0]=0;
+				inbuf1[1]=0;
+				Transmit("down mode\r\n");
+			}
+			else if(inbuf1[0]=='u' && inbuf1[1]==0x0D)
+			{
+				F_Up=1;
+				Ecommand=Elevatorup;
+				inbuf1[0]=0;
+				inbuf1[1]=0;
+				Transmit("up mode\r\n");
+			}
+			else if(inbuf1[0]=='e' && inbuf1[1]=='c' && inbuf1[2]==0x0D)
+			{
+				F_Conti=1;
+				F_Up=1;
+				Ecommand=Elevatorup;
+				inbuf1[0]=0;
+				inbuf1[1]=0;
+				inbuf1[2]=0;
+				Transmit("continuous mode\r\n");
+			}
+			else if(inbuf1[0]=='t' && inbuf1[1]==0x0D)		//end of test mode
+			//if(IN6==in || IN7==in || (inbuf1[0]=='t' && inbuf1[1]==0x0D))
+			{
+				OUT6=~out;		//manual mode
+				F_Test=0;
+				F_Up=0;
+				F_Conti=0;
+				inbuf1[0]=0;
+				inbuf1[1]=0;
+				Transmit("End of test mode\r\n");
+			}
+			if(F_Conti==1)
+			{
+				if(Estatus==Elevatordown)
+					Ecommand=Elevatorup;
+				else if(Estatus==Elevatorup)
+					Ecommand=Elevatordown;
+			}
+		}
+	}
+}
+
+void delay_ms(unsigned int a)
+{
+	unsigned int delay1;
+	unsigned int z;
+	for(delay1=0;delay1<a;delay1++)	for(z=0;z<2800;z++);		//very strange value???
+}
+
+bit Waitms(int delay)
+{
+	static int j;
+	j++;
+	if(j>delay)
+	{
+		j=0;			//	ok
+		return 1;
+	}
+	else
+	{
+		delay_ms(1);	
+		return 0;		//	wait
+	}
+}
+
+char Waitinput(bit input, bit value, int delay )
+{
+	static int i;
+	if(input ==value)
+	{
+		i=0;			//	recount
+		return 1;			// input correct
+	}
+	else
+	{
+		i++;
+		if(i>delay)
+		{
+			i=0;			//	input timeout
+			return 0;
+		}
+		else
+		{
+			delay_ms(1);	
+			return 2;		//	wait input
+		}
+		
+	}
+
+
+}
+char Waitinput2(bit input, bit value, int delay )
+{
+	static int i;
+	if(input ==value)
+	{
+		i=0;			//	input timeout
+		return 1;			// input correct
+	}
+	else
+	{
+		i++;
+		if(i>delay)
+		{
+			i=0;			//	input timeout
+			return 0;
+		}
+		else
+		{
+			delay_ms(1);	
+			return 2;		//	wait input
+		}
+	}
+}
+
+void init_serialcomm(void)
+{
+	SCON = 0x50 ; 				//SCON: serail mode 1, 8-bit UART, enable ucvr
+	TMOD |= 0x21; 				//TMOD: timer 1, mode 2, 8-bit reload
+	PCON |= 0x80; 				//SMOD=1;
+	TH1 =0xF4;     				//絞SMOD=0奀ㄛ場硉數呾狟ㄩ場硉=256-ㄗF/B/32/Xㄘㄗ笢X峈煦杅ㄘ
+	TL1 =0XF4;           	 	//妗珋疏杻薹9600ㄗ炵苀奀笘11.0592MHZㄘ(22.1184奀FA峈12捷)
+	IE |= 0x90; 				//Enable Serial Interrupt 
+	ES=1;                 		//埰勍揹俴諳笢剿
+	PS=1;                 		//扢數揹俴諳笢剿蚥珂撰
+	TR1 =1;              		//雄隅奀T1
+}
+
+void Transmit(unsigned char *r)
+{
+	ES = 0;
+	for( ; *r != '\0'; *r++)
+	{
+		SBUF = *r;	
+		while(!TI);	
+		TI = 0;
+	}
+	ES = 1;
+}
+
+void send_char_com(unsigned char ch) 
+{
+	SBUF=ch;
+	while (TI== 0 );
+	TI= 0 ;
+}
+
+void send_string_com( unsigned char *str, unsigned int strlen)
+{
+	unsigned int k= 0 ;
+	do { send_char_com(*(str + k)); k++; }
+	while (k < strlen);
+}
+
